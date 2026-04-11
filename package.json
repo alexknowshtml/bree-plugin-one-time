@@ -1,0 +1,32 @@
+{
+  "name": "bree-plugin-one-time",
+  "version": "1.0.0",
+  "description": "Persistent one-time job scheduling for Bree — jobs with a date property survive scheduler restarts",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "scripts": {
+    "test": "node test/index.js"
+  },
+  "keywords": [
+    "bree",
+    "bree-plugin",
+    "scheduler",
+    "one-time",
+    "cron",
+    "job-queue",
+    "persistent"
+  ],
+  "author": "Alex Hillman <alex@indyhall.org>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexknowshtml/bree-plugin-one-time.git"
+  },
+  "peerDependencies": {
+    "bree": ">=9.0.0"
+  }
+}
