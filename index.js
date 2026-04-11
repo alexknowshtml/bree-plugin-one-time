@@ -137,16 +137,20 @@ module.exports = function oneTimePlugin(options, Bree) {
 
   const originalStart = Bree.prototype.start;
 
-  Bree.prototype.start = async function () {
-    // `worker deleted` fires when a worker thread finishes (success or error)
-    this.on('worker deleted', (name) => {
-      const queue = loadQueue();
-      const wasOneTime = queue.some(j => j.name === name);
-      if (wasOneTime) {
-        removeFromQueue(name);
-      }
-    });
+  Bree.prototype.start = async function (name) {
+    // Bree calls this.start(job.name) internally for each job — only attach
+    // the cleanup listener on the initial no-arg "start everything" call to
+    // avoid infinite recursion (Bree binds this.start in the constructor).
+    if (!name) {
+      this.on('worker deleted', (workerName) => {
+        const queue = loadQueue();
+        const wasOneTime = queue.some(j => j.name === workerName);
+        if (wasOneTime) {
+          removeFromQueue(workerName);
+        }
+      });
+    }
 
-    return originalStart.call(this);
+    return originalStart.call(this, name);
   };
 };

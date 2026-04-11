@@ -1,6 +1,6 @@
 {
   "name": "bree-plugin-one-time",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Persistent one-time job scheduling for Bree — jobs with a date property survive scheduler restarts",
   "main": "index.js",
   "types": "index.d.ts",
