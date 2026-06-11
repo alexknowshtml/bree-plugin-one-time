@@ -33,6 +33,7 @@ class MockBree extends EventEmitter {
 }
 
 MockBree.prototype.add = function(jobs) {
+  if (this._failAdd) throw new Error('add failed (simulated)');
   const arr = Array.isArray(jobs) ? jobs : [jobs];
   this._added.push(...arr);
   for (const j of arr) this.config.jobs.push(j);
@@ -62,41 +63,43 @@ oneTime.$i = false;
 
 MockBree.extend(oneTime, { queueFile: QUEUE_FILE, verbose: false });
 
-// ── Test 1: add() persists date-based jobs ────────────────────────────────
+(async () => {
+  // ── Test 1: add() persists date-based jobs ────────────────────────────────
 
-const bree1 = new MockBree();
-const futureDate = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
+  const bree1 = new MockBree();
+  const futureDate = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
 
-bree1.add({
-  name: 'test-job-1',
-  path: './jobs/test.cjs',
-  date: futureDate,
-  env: { FOO: 'bar' },
-});
+  await bree1.add({
+    name: 'test-job-1',
+    path: './jobs/test.cjs',
+    date: futureDate,
+    env: { FOO: 'bar' },
+  });
 
-const queue1 = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
-assert.strictEqual(queue1.length, 1, 'Queue should have 1 entry after add()');
-assert.strictEqual(queue1[0].name, 'test-job-1', 'Queue entry should have correct name');
-assert.strictEqual(queue1[0].date, futureDate.toISOString(), 'Queue entry should store ISO date');
-console.log('✓ Test 1: add() persists date-based jobs to queue file');
+  const queue1 = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
+  assert.strictEqual(queue1.length, 1, 'Queue should have 1 entry after add()');
+  assert.strictEqual(queue1[0].name, 'test-job-1', 'Queue entry should have correct name');
+  assert.strictEqual(queue1[0].date, futureDate.toISOString(), 'Queue entry should store ISO date');
+  console.log('✓ Test 1: add() persists date-based jobs to queue file');
 
-// ── Test 2: add() does NOT persist non-date jobs ──────────────────────────
+  // ── Test 2: add() does NOT persist non-date jobs ──────────────────────────
 
-bree1.add({ name: 'recurring-job', cron: '*/5 * * * *' });
-const queue2 = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
-assert.strictEqual(queue2.length, 1, 'Queue should still have 1 entry (no date job not persisted)');
-console.log('✓ Test 2: add() does not persist cron/interval jobs');
+  await bree1.add({ name: 'recurring-job', cron: '*/5 * * * *' });
+  const queue2 = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
+  assert.strictEqual(queue2.length, 1, 'Queue should still have 1 entry (no date job not persisted)');
+  console.log('✓ Test 2: add() does not persist cron/interval jobs');
 
-// ── Test 3: init() restores future jobs, skips expired ───────────────────
+  // ── Test 3: init() restores future jobs, skips expired ───────────────────
 
-// Write a queue with one future + one past job
-fs.writeFileSync(QUEUE_FILE, JSON.stringify([
-  { name: 'future-job', path: './jobs/x.cjs', date: new Date(Date.now() + 3600000).toISOString() },
-  { name: 'past-job',   path: './jobs/x.cjs', date: new Date(Date.now() - 3600000).toISOString() },
-]));
+  // Write a queue with one future + one past job
+  fs.writeFileSync(QUEUE_FILE, JSON.stringify([
+    { name: 'future-job', path: './jobs/x.cjs', date: new Date(Date.now() + 3600000).toISOString() },
+    { name: 'past-job',   path: './jobs/x.cjs', date: new Date(Date.now() - 3600000).toISOString() },
+  ]));
 
-const bree2 = new MockBree();
-bree2.init().then(() => {
+  const bree2 = new MockBree();
+  await bree2.init();
+
   const restoredNames = bree2._added.map(j => j.name);
   assert.ok(restoredNames.includes('future-job'), 'init() should restore future job');
   assert.ok(!restoredNames.includes('past-job'), 'init() should skip past job');
@@ -105,24 +108,52 @@ bree2.init().then(() => {
   assert.strictEqual(queueAfterInit.length, 1, 'Queue should only contain future job after init()');
   console.log('✓ Test 3: init() restores future jobs, skips expired ones');
 
-  // ── Test 4: worker deleted cleans up queue ───────────────────────────────
+  // ── Test 4: add() during init() does not collide with its own restore ────
+  // Regression: queue was written before originalAdd, so an add() that
+  // triggered init() restored the half-added job and threw "duplicate job
+  // name". Queue must be written only after originalAdd succeeds.
+
+  fs.writeFileSync(QUEUE_FILE, JSON.stringify([]));
+  const bree4 = new MockBree();
+  bree4._failAdd = true;
+  let threw = false;
+  try {
+    await bree4.add({
+      name: 'race-job',
+      path: './jobs/x.cjs',
+      date: new Date(Date.now() + 3600000).toISOString(),
+    });
+  } catch {
+    threw = true;
+  }
+  assert.ok(threw, 'add() should propagate originalAdd failure');
+  const queueAfterFailedAdd = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
+  assert.strictEqual(
+    queueAfterFailedAdd.length, 0,
+    'failed add() must not persist the job (queue written only after originalAdd succeeds)'
+  );
+  console.log('✓ Test 4: add() persists only after originalAdd succeeds');
+
+  // ── Test 5: worker deleted cleans up queue ───────────────────────────────
 
   fs.writeFileSync(QUEUE_FILE, JSON.stringify([
     { name: 'cleanup-job', path: './jobs/x.cjs', date: new Date(Date.now() + 3600000).toISOString() },
   ]));
 
   const bree3 = new MockBree();
-  bree3.start().then(() => {
-    bree3.emit('worker deleted', 'cleanup-job');
+  await bree3.init();
+  await bree3.start();
+  bree3.emit('worker deleted', 'cleanup-job');
 
-    // Small delay to allow sync file write
-    setTimeout(() => {
-      const queueAfterDelete = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
-      assert.strictEqual(queueAfterDelete.length, 0, 'Queue should be empty after worker deleted');
-      console.log('✓ Test 4: worker deleted event removes job from queue');
+  // Small delay to allow sync file write
+  await new Promise(r => setTimeout(r, 50));
+  const queueAfterDelete = JSON.parse(fs.readFileSync(QUEUE_FILE, 'utf8'));
+  assert.strictEqual(queueAfterDelete.length, 0, 'Queue should be empty after worker deleted');
+  console.log('✓ Test 5: worker deleted event removes job from queue');
 
-      cleanup();
-      console.log('\nAll tests passed.');
-    }, 50);
-  });
+  cleanup();
+  console.log('\nAll tests passed.');
+})().catch(err => {
+  console.error('TEST FAILURE:', err.message);
+  process.exit(1);
 });

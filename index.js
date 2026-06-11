@@ -54,7 +54,6 @@ module.exports = function oneTimePlugin(options, Bree) {
       path: job.path || null,
       date: job.date instanceof Date ? job.date.toISOString() : job.date,
       worker: job.worker || null,
-      env: job.env || null,
     });
     saveQueue(queue);
     if (opts.verbose) console.log(`[bree-plugin-one-time] queued: ${job.name} at ${job.date}`);
@@ -71,16 +70,21 @@ module.exports = function oneTimePlugin(options, Bree) {
 
   const originalAdd = Bree.prototype.add;
 
-  Bree.prototype.add = function (jobs) {
-    const jobsArr = Array.isArray(jobs) ? jobs : [jobs];
+  Bree.prototype.add = async function (jobs) {
+    // Persist AFTER originalAdd succeeds. originalAdd may trigger init(),
+    // which restores jobs from the queue file — if we write the queue first,
+    // init restores the job we're mid-adding and originalAdd throws
+    // "duplicate job name" against its own restore.
+    const result = await originalAdd.call(this, jobs);
 
+    const jobsArr = Array.isArray(jobs) ? jobs : [jobs];
     for (const job of jobsArr) {
       if (job && typeof job === 'object' && job.date) {
         addToQueue(job);
       }
     }
 
-    return originalAdd.call(this, jobs);
+    return result;
   };
 
   // ── Wrap Bree.prototype.init ───────────────────────────────────────────────
@@ -129,28 +133,16 @@ module.exports = function oneTimePlugin(options, Bree) {
     // Rewrite queue with only still-valid jobs
     saveQueue(stillValid);
 
+    // Listen for job completion to clean up the queue file.
+    // Attached here in init (runs once) rather than wrapping start
+    // (which Bree calls internally per-job, causing recursion issues).
+    this.on('worker deleted', (workerName) => {
+      const queue = loadQueue();
+      if (queue.some(j => j.name === workerName)) {
+        removeFromQueue(workerName);
+      }
+    });
+
     return result;
-  };
-
-  // ── Wrap Bree.prototype.start ──────────────────────────────────────────────
-  // After start, listen for job completion to clean up the queue file.
-
-  const originalStart = Bree.prototype.start;
-
-  Bree.prototype.start = async function (name) {
-    // Bree calls this.start(job.name) internally for each job — only attach
-    // the cleanup listener on the initial no-arg "start everything" call to
-    // avoid infinite recursion (Bree binds this.start in the constructor).
-    if (!name) {
-      this.on('worker deleted', (workerName) => {
-        const queue = loadQueue();
-        const wasOneTime = queue.some(j => j.name === workerName);
-        if (wasOneTime) {
-          removeFromQueue(workerName);
-        }
-      });
-    }
-
-    return originalStart.call(this, name);
   };
 };
